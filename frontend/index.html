@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Resume Extractor</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- DataTables CSS -->
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.7/css/jquery.dataTables.min.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Resume Info Extractor</h1>
+            <p>Upload resumes in multiple formats and extract structured data</p>
+        </header>
+
+        <div class="main-flex">
+            <div class="upload-section">
+                <div class="upload-area" id="uploadArea">
+                    <div class="upload-icon">📄</div>
+                    <h3>Drop your resume files here</h3>
+                    <p>or click to browse</p>
+                    <input type="file" id="fileInput" multiple accept=".pdf,.doc,.docx,.xlsx,.xls,.txt">
+                    <div class="supported-formats">
+                        <span>Supported formats: PDF, DOC, DOCX, TXT</span>
+                    </div>
+                    <!-- Selected Files Section moved inside upload-area -->
+                    <div class="files-preview" id="filesPreview" style="display: none; margin-top: 30px;">
+                        <h3>Selected Files</h3>
+                        <div class="files-list" id="filesList"></div>
+                        <div id="filePreviews"></div>
+                        <div style="display: flex; gap: 10px;">
+                            <button class="btn btn-primary frosted-btn" id="generateBtn">Generate</button>
+                            <button class="btn btn-primary frosted-btn" id="removeAllBtn">Remove All</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <script>
+            document.getElementById('candidateFitBtn').onclick = function() {
+                // Optionally, check if resumes are uploaded and save to localStorage
+                window.location.href = 'job_description.html';
+            };
+            </script>
+        <div class="results-section" id="resultsSection" style="display: none;">
+            <h3>Extracted Data</h3>
+            <div class="data-preview" id="dataPreview"></div>
+            <div class="download-options" style="display: flex; gap: 10px;">
+                <button class="btn btn-primary frosted-btn" id="downloadBtn">Download Excel</button>
+                <button class="btn btn-primary frosted-btn" id="candidateFitBtn" style="display: none;">Get Candidate Fit</button>
+            </div>
+        </div>
+
+        <div class="error-message" id="errorMessage" style="display: none;">
+            <div class="error-content">
+                <span class="error-icon">⚠️</span>
+                <span class="error-text"></span>
+            </div>
+        </div>
+    </div>
+    <div class="loading" id="loading" style="display: none;">
+        <div class="spinner"></div>
+        <p>Processing your resumes...</p>
+    </div>
+
+    <script src="scripts.js"></script>
+    <!-- jQuery and DataTables JS -->
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js"></script>
+</body>
+</html>

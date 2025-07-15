@@ -1,0 +1,47 @@
+# Web Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# File Processing
+PyPDF2==3.0.1
+python-docx==1.1.0
+pandas
+openpyxl==3.1.2
+docx2txt
+PyMuPDF
+pillow
+pytesseract
+opencv-python
+
+# AI/ML
+google-generativeai==0.3.2
+
+# Utilities
+python-dotenv==1.0.0
+python-multipart==0.0.6
+
+# PDF Generation
+reportlab==4.0.6
+
+# Excel Processing
+xlrd==2.0.1
+
+# Additional utilities
+requests==2.31.0
+aiofiles==23.2.1
+
+
+werkzeug
+gunicorn
+
+redis
+
+fastapi
+sqlalchemy
+aiomysql
+passlib[bcrypt]
+python-jose[cryptography]
+
+mysql-connector-python
+
+openai
