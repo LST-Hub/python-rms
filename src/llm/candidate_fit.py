@@ -376,6 +376,8 @@ Candidate Resume:
                     # Validate required fields
                     required_fields = ['summary', 'fit_percentage', 'key_matches', 'key_gaps']
                     if all(field in parsed_result for field in required_fields):
+                        parsed_result['candidate_email'] = resume_data.get('personal_info', {}).get('email', 'N/A')
+                        parsed_result['candidate_phone'] = resume_data.get('personal_info', {}).get('phone', 'N/A')
                         # Cache the result for future use
                         cache_key = self._generate_cache_key(resume_data, job_description_data, fit_options)
                         self.cache_data[cache_key] = parsed_result
