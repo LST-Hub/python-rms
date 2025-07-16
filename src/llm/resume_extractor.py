@@ -48,7 +48,7 @@ class ResumeExtractor:
         self.api_providers = {
             'openai': {
                 'vision_models': [('gpt-4o', 8000), ('gpt-4o-mini', 4000)],  # Vision-capable models for OCR/scanned
-                'text_models': [('gpt-4.1', 4000)],  # Text-only models for text-based PDFs
+                'text_models': [('gpt-3.5-turbo', 4000)],  # Text-only models for text-based PDFs
                 'api_key': self.openai_api_key,
             }
         }
@@ -135,6 +135,9 @@ class ResumeExtractor:
     - Use empty strings or empty arrays for missing or not found values.
     - Include all emails and phone numbers found.
     - Include country code in phone numbers if present.
+    - When extracting phone numbers, ignore visual dividers such as `|` or `/` and do not treat them as digits.
+    - Only digits, spaces, parentheses, hyphens, and `+` are valid in phone numbers.
+    - If the phone number ends in an extra digit due to a pipe or special character, remove it.
     - Include all skill types: Technical, Soft, Tools, Platforms, and Domain-Specific.
     - Only include skill from skill section not from other section.
     - Preserve bullet points in description fields where applicable.
@@ -252,7 +255,7 @@ class ResumeExtractor:
             elif model == 'gpt-4o-mini':
                 max_output_tokens = 4000
             else:  # gpt-4o
-                max_output_tokens = 8000
+                max_output_tokens = 4000
             
             completion = self.openai_client.chat.completions.create(
                 model=model,
@@ -482,7 +485,7 @@ class ResumeExtractor:
             }
 
     def _extract_with_vision_api(self, file_path: str, filename: str, model: str, max_retries: int) -> Dict[str, Any]:
-        """Extract resume data using Vision API for scanned/image-based PDFs"""
+        """Extract resume data using Vision API for scannedwd3ew/image-based PDFs"""
         try:
             # Convert PDF to images
             images = self._pdf_to_images(file_path)
@@ -513,7 +516,7 @@ class ResumeExtractor:
                         json_data["extraction_timestamp"] = datetime.now().isoformat()
                         
                         # Post-process and validate data
-                        #json_data = self._post_process_data(json_data)
+                        json_data = self._post_process_data(json_data)
                         
                         return json_data
                         
@@ -572,7 +575,7 @@ class ResumeExtractor:
                     json_data["extraction_timestamp"] = datetime.now().isoformat()
                     
                     # Post-process and validate data
-                    #json_data = self._post_process_data(json_data)
+                    json_data = self._post_process_data(json_data)
                     
                     return json_data
                     
@@ -777,12 +780,9 @@ class ResumeExtractor:
         # Remove control characters but keep essential whitespace
         cleaned = ''.join(c for c in text if category(c)[0] != "C" or c in '\n\r\t ')
         
-        # Fix common OCR errors
+        # Fix common OCR errors - but be careful with phone number context
         ocr_fixes = {
-            'l': 'I',  # Common OCR mistake: lowercase l instead of uppercase I
-            '0': 'O',  # Zero instead of O (context-dependent)
             'rn': 'm',  # rn combination often misread as m
-            '|': 'I',  # Vertical bar instead of I
             '€': 'e',  # Euro symbol instead of e
             '©': 'c',  # Copyright symbol instead of c
             '®': 'r',  # Registered symbol instead of r
@@ -796,6 +796,7 @@ class ResumeExtractor:
             '…': '...',  # Ellipsis
         }
         
+        # Apply OCR fixes but avoid phone number context
         for wrong, correct in ocr_fixes.items():
             cleaned = cleaned.replace(wrong, correct)
         
@@ -812,6 +813,32 @@ class ResumeExtractor:
         
         return '\n'.join(filtered_lines)
 
+    def _clean_phone_number(self, phone: str) -> str:
+        """Clean and validate phone number with better handling of OCR artifacts"""
+        if not phone:
+            return ""
+        
+        # First, remove common OCR artifacts that appear at the end of phone numbers
+        phone = phone.strip()
+        
+        # Remove trailing pipes and other common OCR artifacts
+        phone = re.sub(r'[|/\\]+$', '', phone)
+        
+        # Remove any characters that are clearly not part of a phone number
+        # Keep only digits, +, -, (, ), and spaces
+        phone = re.sub(r'[^\d\+\-\(\)\s]', '', phone)
+        
+        # Normalize spaces
+        phone = re.sub(r'\s+', ' ', phone).strip()
+        
+        # Validate phone number (should have at least 10 digits)
+        digits_only = re.sub(r'\D', '', phone)
+        
+        # Check if we have a reasonable number of digits (10-15 is typical for international numbers)
+        if 10 <= len(digits_only) <= 15:
+            return phone
+        else:
+            return ""
     
     def _extract_from_doc(self, file_path: str) -> str:
         """Extract text from legacy DOC file using multiple approaches"""
@@ -1037,7 +1064,7 @@ class ResumeExtractor:
                 name = ' '.join(word.capitalize() for word in name.split())  # Proper case
                 personal_info["name"] = name.strip()
             
-            """# Enhanced email validation and correction
+            # Enhanced email validation and correction
             if "email" in personal_info and personal_info["email"]:
                 email = personal_info["email"]
                 # Common OCR email fixes
@@ -1056,21 +1083,11 @@ class ResumeExtractor:
                     if email_match:
                         personal_info["email"] = email_match.group(0).lower()
                     else:
-                        personal_info["email"] = """""
+                        personal_info["email"] = ""
             
-            # Enhanced phone number cleaning
+            # Enhanced phone number cleaning using the new helper method
             if "phone" in personal_info and personal_info["phone"]:
-                phone = personal_info["phone"]
-                # Remove common OCR artifacts
-                phone = re.sub(r'[^\d\+\-\(\)\s]', '', phone)  # Keep only digits, +, -, (), space
-                phone = re.sub(r'\s+', ' ', phone).strip()  # Normalize spaces
-                
-                # Validate phone number (should have at least 10 digits)
-                digits_only = re.sub(r'\D', '', phone)
-                if len(digits_only) >= 10:
-                    personal_info["phone"] = phone
-                else:
-                    personal_info["phone"] = ""
+                personal_info["phone"] = self._clean_phone_number(personal_info["phone"])
             
             # Clean LinkedIn URL
             if "linkedin" in personal_info and personal_info["linkedin"]:
@@ -1093,7 +1110,7 @@ class ResumeExtractor:
                     else:
                         personal_info["linkedin"] = ""
         
-        """# Enhanced skills cleaning
+        # Enhanced skills cleaning
         if "skills" in data and isinstance(data["skills"], list):
             skills = []
             seen_skills = set()
@@ -1107,9 +1124,9 @@ class ResumeExtractor:
                     if 2 <= len(skill_cleaned) <= 50 and skill_cleaned.lower() not in seen_skills:
                         skills.append(skill_cleaned)
                         seen_skills.add(skill_cleaned.lower())
-            data["skills"] = skills"""
+            data["skills"] = skills
         
-        """# Enhanced experience cleaning
+        # Enhanced experience cleaning
         if "experience" in data and isinstance(data["experience"], list):
             cleaned_experience = []
             for exp in data["experience"]:
@@ -1131,7 +1148,7 @@ class ResumeExtractor:
                     # Only keep if has meaningful content
                     if exp.get("company") and exp.get("title"):
                         cleaned_experience.append(exp)
-            data["experience"] = cleaned_experience"""
+            data["experience"] = cleaned_experience
         
         return data
 
