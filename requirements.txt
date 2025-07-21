@@ -46,7 +46,6 @@ mysql-connector-python
 
 openai
 
-
 google-cloud-vision>=3.4.0
 google-auth>=2.17.0
 google-auth-oauthlib>=1.0.0

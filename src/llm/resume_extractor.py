@@ -28,6 +28,10 @@ import cv2
 from unicodedata import category
 import unicodedata
 
+from google.cloud import vision
+from google.oauth2 import service_account
+import tempfile
+
 # Configure logger
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -39,19 +43,43 @@ class ResumeExtractor:
     
     def __init__(self):
         """Initialize the multi-API resume extractor."""
+
+        # Google Cloud Vision API configuration
+        self.google_credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
+        self.google_project_id = os.getenv('GOOGLE_CLOUD_PROJECT_ID')
+
         # API configurations
         self.openai_api_key = os.getenv('OPENAI_API_KEY')
         if not self.openai_api_key:
             raise ValueError("OPENAI_API_KEY is not set")
+
+        self.vision_client = None
+        if self.google_credentials_path and os.path.exists(self.google_credentials_path):
+            try:
+                credentials = service_account.Credentials.from_service_account_file(
+                    self.google_credentials_path
+                )
+                self.vision_client = vision.ImageAnnotatorClient(credentials=credentials)
+                logger.info("Google Cloud Vision API initialized successfully")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Google Cloud Vision API: {e}")
+        else:
+            logger.warning("Google Cloud Vision API credentials not found or invalid")
         
         # Available API providers and models
         self.api_providers = {
             'openai': {
-                'vision_models': [('gpt-4o', 8000), ('gpt-4o-mini', 4000)],  # Vision-capable models for OCR/scanned
-                'text_models': [('gpt-3.5-turbo', 4000)],  # Text-only models for text-based PDFs
+                'vision_models': [('gpt-4o', 8000), ('gpt-4o-mini', 4000)],
+                'text_models': [('gpt-4.1-mini', 4000)],
                 'api_key': self.openai_api_key,
+            },
+            'google_vision': {
+                'enabled': self.vision_client is not None,
+                'client': self.vision_client,
             }
         }
+
+        self.ocr_methods = ['google_vision']
         
         # Current provider and model indices
         self.current_provider = 'openai'
@@ -161,6 +189,16 @@ class ResumeExtractor:
         print(f"Current vision model: {self.get_current_vision_model()}")
         print(f"Current text model: {self.get_current_text_model()}")
 
+    def load_prompts(self):
+        prompts = {}
+        PROMPT_FOLDER = "src/prompts"
+        for fname in os.listdir(PROMPT_FOLDER):
+            if fname.endswith(".txt"):
+                key = fname.replace(".txt", "")
+                with open(os.path.join(PROMPT_FOLDER, fname), "r", encoding="utf-8") as f:
+                    prompts[key] = f.read()
+        return prompts
+
     def get_current_vision_model(self) -> str:
         """Get the current vision model being used."""
         provider_config = self.api_providers[self.current_provider]
@@ -170,6 +208,241 @@ class ResumeExtractor:
         """Get the current text model being used."""
         provider_config = self.api_providers[self.current_provider]
         return provider_config['text_models'][self.current_text_model_index][0]
+    
+    def _extract_text_with_google_vision(self, file_path: str, max_pages: int = 10) -> str:
+        """Extract text from PDF using Google Cloud Vision API OCR"""
+        if not self.vision_client:
+            raise Exception("Google Cloud Vision API not initialized")
+        
+        try:
+            images = self._pdf_to_images_for_ocr(file_path, max_pages)
+            if not images:
+                raise Exception("Could not convert PDF to images for OCR")
+            
+            extracted_text = ""
+            
+            for i, image_data in enumerate(images):
+                try:
+                    image = vision.Image(content=image_data)
+                    
+                    # Use document text detection for better layout analysis
+                    response = self.vision_client.document_text_detection(image=image)
+                    
+                    if response.error.message:
+                        raise Exception(f"Google Vision API error: {response.error.message}")
+                    
+                    # Process with layout information
+                    page_text = self._process_document_response(response)
+                    extracted_text += f"\n--- Page {i+1} ---\n{page_text}\n"
+                    
+                    logger.info(f"Extracted text from page {i+1} with layout analysis")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to extract text from page {i+1}: {e}")
+                    continue
+            
+            return extracted_text.strip()
+            
+        except Exception as e:
+            logger.error(f"Enhanced OCR failed: {e}")
+            raise
+
+    def _process_document_response(self, response) -> str:
+        """Process Google Vision document response with layout preservation"""
+        if not response.full_text_annotation:
+            return ""
+        
+        # Group text by blocks and paragraphs
+        text_blocks = []
+        
+        for page in response.full_text_annotation.pages:
+            for block in page.blocks:
+                block_text = []
+                block_confidence = block.confidence
+                
+                for paragraph in block.paragraphs:
+                    para_words = []
+                    for word in paragraph.words:
+                        word_text = ''.join([symbol.text for symbol in word.symbols])
+                        para_words.append(word_text)
+                    
+                    if para_words:
+                        paragraph_text = ' '.join(para_words)
+                        block_text.append(paragraph_text)
+                
+                if block_text:
+                    # Join paragraphs in block with newlines
+                    full_block_text = '\n'.join(block_text)
+                    text_blocks.append({
+                        'text': full_block_text,
+                        'confidence': block_confidence,
+                        'bbox': self._get_block_bbox(block)
+                    })
+        
+        # Sort blocks by position (top to bottom, left to right)
+        text_blocks.sort(key=lambda x: (x['bbox']['top'], x['bbox']['left']))
+        
+        # Join blocks with appropriate spacing
+        result_text = []
+        for block in text_blocks:
+            if block['confidence'] > 0.5:  # Filter low-confidence blocks
+                result_text.append(block['text'])
+        
+        return '\n\n'.join(result_text)
+    
+    def _get_block_bbox(self, block) -> Dict[str, int]:
+        """Get bounding box coordinates for a text block"""
+        vertices = block.bounding_box.vertices
+        
+        if not vertices:
+            return {'left': 0, 'top': 0, 'right': 0, 'bottom': 0}
+        
+        left = min(v.x for v in vertices)
+        right = max(v.x for v in vertices)
+        top = min(v.y for v in vertices)
+        bottom = max(v.y for v in vertices)
+        
+        return {
+            'left': left,
+            'top': top, 
+            'right': right,
+            'bottom': bottom
+        }
+    
+    def _pdf_to_images_for_ocr(self, file_path: str, max_pages: int = 10) -> List[bytes]:
+        """Convert PDF pages to image bytes for OCR processing"""
+        images = []
+        
+        try:
+            doc = fitz.open(file_path)
+            
+            # Limit number of pages to avoid processing too many pages
+            num_pages = min(len(doc), max_pages)
+            
+            for page_num in range(num_pages):
+                try:
+                    page = doc.load_page(page_num)
+                    
+                    # Convert page to high-resolution image for better OCR
+                    mat = fitz.Matrix(2.0, 2.0)  # 2x zoom for better quality
+                    pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+                    img_data = pix.tobytes("png")
+                    
+                    images.append(img_data)
+                    logger.info(f"Converted page {page_num + 1} to image for OCR")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to convert page {page_num} to image: {e}")
+                    continue
+            
+            doc.close()
+            
+        except Exception as e:
+            logger.error(f"Error converting PDF to images for OCR: {e}")
+            raise
+        
+        return images
+    
+    def _extract_with_ocr_fallback(self, file_path: str, filename: str, max_retries: int = 3) -> Dict[str, Any]:
+        """
+        Extract text using OCR methods with fallback chain:
+        1. Google Cloud Vision API (if available)
+        2. Tesseract OCR (local)
+        3. OpenAI Vision API (as last resort)
+        """
+        ocr_text = ""
+        extraction_method = ""
+        
+        # Try OCR methods in order of preference
+        for method in self.ocr_methods:
+            try:
+                if method == 'google_vision' and self.vision_client:
+                    logger.info(f"Attempting Google Cloud Vision OCR for {filename}")
+                    ocr_text = self._extract_text_with_google_vision(file_path)
+                    extraction_method = "google_vision_ocr"
+                    
+                """elif method == 'tesseract':
+                    logger.info(f"Attempting Tesseract OCR for {filename}")
+                    ocr_text = self._extract_text_with_tesseract(file_path)
+                    extraction_method = "tesseract_ocr"
+                    
+                elif method == 'openai_vision' and self.openai_client:
+                    logger.info(f"Attempting OpenAI Vision API for {filename}")
+                    model = self.get_current_vision_model()
+                    return self._extract_with_vision_api(file_path, filename, model, max_retries)"""
+                
+                logger.info(f"extarcted data {ocr_text}")
+                # If we got good text, proceed with processing
+                if ocr_text and self._validate_extracted_text(ocr_text):
+                    logger.info(f"Successfully extracted text using {method} for {filename}")
+                    break
+                else:
+                    logger.warning(f"OCR method {method} produced low-quality text for {filename}")
+                    
+            except Exception as e:
+                logger.warning(f"OCR method {method} failed for {filename}: {e}")
+                continue
+        
+        # If no OCR method worked, return error
+        if not ocr_text or not self._validate_extracted_text(ocr_text):
+            return {
+                "filename": filename,
+                "error": "All OCR methods failed to extract readable text",
+                "success": False
+            }
+        
+        # Process the extracted text with AI for structured data extraction
+        model = self.get_current_text_model()
+        logger.info(f"Processing OCR text with {model} for {filename}")
+        
+        for attempt in range(max_retries):
+            try:
+                response_text = self._make_api_call(ocr_text, self.current_provider, model, is_image=False)
+                
+                if response_text:
+                    # Clean the response text to extract JSON
+                    json_data = self._clean_json_response(response_text)
+                    
+                    # Add metadata
+                    json_data["filename"] = filename
+                    json_data["success"] = True
+                    json_data["extraction_method"] = extraction_method
+                    json_data["ocr_text_length"] = len(ocr_text)
+                    json_data["provider"] = self.current_provider
+                    json_data["model"] = model
+                    json_data["extraction_timestamp"] = datetime.now().isoformat()
+                    
+                    # Post-process and validate data
+                    #json_data = self._post_process_data(json_data)
+                    
+                    return json_data
+                    
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode error on attempt {attempt + 1}: {str(e)}")
+                if attempt == max_retries - 1:
+                    return {
+                        "filename": filename,
+                        "error": f"Failed to parse AI response as JSON after {max_retries} attempts: {str(e)}",
+                        "raw_response": response_text[:500] if response_text else "No response",
+                        "success": False
+                    }
+                time.sleep(1 * (attempt + 1))
+                
+            except Exception as e:
+                logger.error(f"Error on attempt {attempt + 1}: {str(e)}")
+                if attempt == max_retries - 1:
+                    return {
+                        "filename": filename,
+                        "error": f"Failed to extract resume data after {max_retries} attempts: {str(e)}",
+                        "success": False
+                    }
+                time.sleep(1 * (attempt + 1))
+        
+        return {
+            "filename": filename,
+            "error": f"Failed to extract resume data after {max_retries} attempts.",
+            "success": False
+        }
     
     def _make_openai_vision_api_call(self, images: List[str], model: str) -> Optional[str]:
         """Make API call to OpenAI Vision API with image data"""
@@ -201,7 +474,7 @@ class ResumeExtractor:
                 "content": [
                     {
                         "type": "text",
-                        "text": self.extraction_prompt
+                        "text": self.load_prompts()
                     }
                 ]
             }
@@ -241,18 +514,20 @@ class ResumeExtractor:
 
     def _make_openai_text_api_call(self, text_content: str, model: str) -> Optional[str]:
         """Make API call to OpenAI with text content (for text-based PDFs)"""
+        prompts = self.load_prompts()
         if not self.openai_client:
             logger.error("OpenAI client not initialized - check API key")
             return None
             
         try:
-            safe_text = self.clean_unicode(text_content)
-            full_prompt = self.extraction_prompt + "\n\nResume text:\n" + safe_text
+            #safe_text = self.clean_unicode(text_content)
+            all_prompts = "\n\n".join(prompts.values())
+            full_prompt = all_prompts + "\n\nResume text:\n" + text_content
             
             # Determine max_tokens based on model
-            if model == 'gpt-4o-mini':
+            if model == 'gpt-4.1-mini':
                 max_output_tokens = 4000
-            elif model == 'gpt-4o-mini':
+            elif model == 'gpt-4.1-mini':
                 max_output_tokens = 4000
             else:  # gpt-4o
                 max_output_tokens = 4000
@@ -283,6 +558,7 @@ class ResumeExtractor:
 
             # Update usage tracking
             self._update_api_usage('openai', model, 1)
+            logger.info(completion.choices[0].message.content)
             return completion.choices[0].message.content
             
         except Exception as e:
@@ -412,9 +688,10 @@ class ResumeExtractor:
                     "success": False
                 }
             
-            # Handle PDF files with intelligent model selection
+            # Handle PDF files - always use OCR with Google Vision
             if file_extension == '.pdf':
-                return self._extract_from_pdf_intelligent(file_path, filename, max_retries)
+                logger.info(f"Processing PDF with Google Vision OCR: {filename}")
+                return self._extract_with_ocr_fallback(file_path, filename, max_retries)
             
             # Handle other file types with text model (they are all text-based)
             else:
@@ -442,50 +719,31 @@ class ResumeExtractor:
 
     def _extract_from_pdf_intelligent(self, file_path: str, filename: str, max_retries: int) -> Dict[str, Any]:
         """
-        Intelligent PDF extraction: Use appropriate model based on PDF type
+        Always use Google Vision OCR for PDFs
         """
         try:
-            # Step 1: Check if PDF is text-based or image-based
-            pdf_type = self._check_pdf_type(file_path)
-            logger.info(f"PDF type detected: {pdf_type}")
-            
-            # Step 2: Choose appropriate model based on PDF type
-            if pdf_type == "text-based":
-                # Use text model for text-based PDFs
-                model = self.get_current_text_model()
-                logger.info(f"Using text model {model} for text-based PDF: {filename}")
-                
-                try:
-                    text_content = self._extract_text_from_pdf_simple(file_path)
-                    if self._validate_extracted_text(text_content):
-                        return self._extract_with_text_api(text_content, filename, model, max_retries)
-                    else:
-                        logger.info(f"Text extraction quality low for {filename}, falling back to Vision API")
-                        # Fall back to vision model if text extraction fails
-                        model = self.get_current_vision_model()
-                        return self._extract_with_vision_api(file_path, filename, model, max_retries)
-                except Exception as e:
-                    logger.warning(f"Text extraction failed for {filename}: {e}")
-                    # Fall back to vision model
-                    model = self.get_current_vision_model()
-                    return self._extract_with_vision_api(file_path, filename, model, max_retries)
-            
-            else:
-                # Use vision model for image-based or unknown PDFs
-                model = self.get_current_vision_model()
-                logger.info(f"Using vision model {model} for image-based/scanned PDF: {filename}")
-                return self._extract_with_vision_api(file_path, filename, model, max_retries)
-                
+            logger.info(f"Using Google Vision OCR for PDF: {filename}")
+            return self._extract_with_ocr_fallback(file_path, filename, max_retries)
         except Exception as e:
-            logger.error(f"Error in intelligent PDF extraction: {str(e)}")
+            logger.error(f"Error in PDF processing: {str(e)}")
             return {
                 "filename": filename,
                 "error": f"Error in PDF processing: {str(e)}",
                 "success": False
             }
+        
+    def get_ocr_capabilities(self) -> Dict[str, bool]:
+        """Get available OCR capabilities"""
+        capabilities = {
+            'google_vision': self.vision_client is not None,
+            #'tesseract': self._check_tesseract_availability(),
+            #'openai_vision': self.openai_client is not None
+        }
+        
+        return capabilities
 
     def _extract_with_vision_api(self, file_path: str, filename: str, model: str, max_retries: int) -> Dict[str, Any]:
-        """Extract resume data using Vision API for scannedwd3ew/image-based PDFs"""
+        """Extract resume data using Vision API for scanned/image-based PDFs"""
         try:
             # Convert PDF to images
             images = self._pdf_to_images(file_path)
@@ -1021,23 +1279,43 @@ class ResumeExtractor:
         # Step 2: Strip leading/trailing whitespace
         response_text = response_text.strip()
 
-        # Step 3: Extract JSON-like substring between curly braces
-        json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-        if json_match:
-            json_text = json_match.group(0)
-        else:
-            json_text = response_text  # fallback to entire response
-
-        # Step 4: Sanitize bad characters that break JSON parsing
-        sanitized = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', json_text)
-        sanitized = sanitized.replace('“', '"').replace('”', '"').replace("’", "'").replace("�", "?")
-
-        # Step 5: Attempt to parse into Python dict
-        try:
-            return json.loads(sanitized)
-        except json.JSONDecodeError as e:
-            print(f"[JSON Parse Error] {e}")
-            return {}
+        # Step 3: Handle multiple JSON objects - combine them into one
+        # Find all individual JSON objects
+        json_objects = []
+        brace_count = 0
+        current_obj = ""
+        
+        for char in response_text:
+            if char == '{':
+                if brace_count == 0:
+                    current_obj = char
+                else:
+                    current_obj += char
+                brace_count += 1
+            elif char == '}':
+                current_obj += char
+                brace_count -= 1
+                if brace_count == 0:
+                    json_objects.append(current_obj)
+                    current_obj = ""
+            elif brace_count > 0:
+                current_obj += char
+        
+        # Step 4: Parse each JSON object and merge them
+        merged_data = {}
+        for json_obj in json_objects:
+            try:
+                # Sanitize bad characters
+                sanitized = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', json_obj)
+                sanitized = sanitized.replace('"', '"').replace('"', '"').replace("'", "'").replace("�", "?")
+                
+                parsed = json.loads(sanitized)
+                merged_data.update(parsed)
+            except json.JSONDecodeError as e:
+                print(f"[JSON Parse Error in object] {e}: {json_obj[:100]}...")
+                continue
+        
+        return merged_data
 
     def _post_process_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Enhanced post-processing with OCR-specific corrections"""
@@ -1255,3 +1533,73 @@ class ResumeExtractor:
             await asyncio.sleep(0.1)
         
         return results
+
+
+if __name__ == "__main__":
+    import argparse
+    import os
+    import json
+    import logging
+    
+    # Set up logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Resume Extractor - Manual PDF Test with Google Vision')
+    parser.add_argument('pdf_path', help='Path to the PDF file to analyze')
+    parser.add_argument('--output', '-o', help='Output JSON file path (optional)')
+    args = parser.parse_args()
+    
+    # Check if file exists
+    if not os.path.exists(args.pdf_path):
+        print(f"Error: File not found: {args.pdf_path}")
+        exit(1)
+    
+    # Initialize the extractor
+    try:
+        extractor = ResumeExtractor()
+        print(f"Initializing ResumeExtractor... Done.")
+        
+        # Print OCR capabilities
+        ocr_caps = extractor.get_ocr_capabilities()
+        print("OCR Capabilities:")
+        for method, available in ocr_caps.items():
+            print(f"  - {method}: {'Available' if available else 'Not available'}")
+        
+        # Extract resume data directly using Google Vision
+        filename = os.path.basename(args.pdf_path)
+        print(f"Processing PDF with Google Vision OCR: {filename}")
+        result = extractor.extract_from_file(args.pdf_path, filename)
+        
+        # Print extraction results
+        print("\nExtraction Results:")
+        print(f"Success: {result.get('success', False)}")
+        
+        if result.get('success', False):
+            print(f"Name: {result.get('personal_info', {}).get('name', 'N/A')}")
+            print(f"Email: {result.get('personal_info', {}).get('email', 'N/A')}")
+            print(f"Phone: {result.get('personal_info', {}).get('phone', 'N/A')}")
+            print(f"Skills: {len(result.get('skills', []))} found")
+            print(f"Experience: {len(result.get('experience', []))} entries")
+            print(f"Education: {len(result.get('education', []))} entries")
+            
+            # Save to output file if specified
+            if args.output:
+                with open(args.output, 'w', encoding='utf-8') as f:
+                    json.dump(result, f, indent=2)
+                print(f"\nResults saved to: {args.output}")
+            else:
+                print("\nFull JSON result:")
+                print(json.dumps(result, indent=2))
+        else:
+            print(f"Error: {result.get('error', 'Unknown error')}")
+            if 'raw_response' in result:
+                print(f"Raw response: {result['raw_response']}")
+    
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        import traceback
+        traceback.print_exc()

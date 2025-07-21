@@ -479,11 +479,11 @@ class ResumeExtractor {
                     <tbody>
             `;
             data.extracted_data.forEach((resume, idx) => {
-                const name = resume.personal_info?.name || '';
-                const email = resume.personal_info?.email || '';
-                const phone = resume.personal_info?.phone || '';
-                const location = resume.personal_info?.location || '';
-                const designation = resume.personal_info?.designation || '';
+                const name = resume.name || '';
+                const email = resume.email || '';
+                const phone = resume.phone || '';
+                const location = resume.location || '';
+                const designation = resume.experience?.title || '';
                 const skills = Array.isArray(resume.skills) ? resume.skills.join(', ') : (resume.skills || '');
                 const education = Array.isArray(resume.education)
                     ? resume.education.map(e => (typeof e === 'object' ? Object.values(e).filter(v => v).join(', ') : e)).join(' | ')
@@ -492,7 +492,7 @@ class ResumeExtractor {
                     ? resume.experience.map(e => (typeof e === 'object' ? Object.values(e).filter(v => v).join(', ') : e)).join(' | ')
                     : (resume.experience || '');
                 const summary = resume.summary || "";
-                const total_experience = resume.experience?.total_experience || '';
+                const total_experience = resume.total_experience || '';
 
                 tableHtml += `
                     <tr>

@@ -96,7 +96,7 @@ class RateLimiter:
         """Wait until we can make a request within both RPM and TPM limits for specific model"""
         async with self.lock:
             if model_name not in self.model_limits:
-                model_name = 'gpt-4o-mini'  # Default fallback
+                model_name = 'gpt-4.1-mini'  # Default fallback
             
             limits = self.model_limits[model_name]
             now = time.time()
@@ -942,21 +942,24 @@ def create_excel_response(data):
             if "extracted_data" in data:
                 for resume in data["extracted_data"]:
                     summary_row = {
-                        "Name": resume.get("personal_info", {}).get("name", ""),
-                        "Email": resume.get("personal_info", {}).get("email", ""),
-                        "Phone": resume.get("personal_info", {}).get("phone", ""),
+                        "Name": resume.get("name", ""),
+                        "Email": resume.get("email", ""),
+                        "Phone": resume.get("phone", ""),
                         "Skills": ", ".join(resume.get("skills", [])) if isinstance(resume.get("skills"), list) else str(resume.get("skills", "")),
                         "Experience": "; ".join([
                             f"{exp.get('title', '')} at {exp.get('company', '')} ({exp.get('location', '')}) - {exp.get('duration', '')}"
                             for exp in resume.get("experience", [])
                         ]),
                         "Education": "; ".join([
-                            f"{edu.get('degree', '')} from {edu.get('institution', '')}"
+                            f"{edu.get('degree', '')}"
                             for edu in resume.get("education", [])
                         ]),
                         "Designation": resume.get("experience", [{}])[0].get("title", "") if isinstance(resume.get("experience"), list) and resume.get("experience") else "",
                         "Summary": resume.get("summary", ""),
-                        "Total Exeprience": resume.get("total_experience", ""),
+                        "Total Experience": resume.get("total_experience", ""),
+                        "Awards": ", ".join(resume.get("awards", [])) if isinstance(resume.get("awards"), list) else str(resume.get("awards", "")),
+                        "Certifications": "; ".join([f"{cer.get('name', '')}" for cer in resume.get("certifications", [])]),
+                        "Projects": "; ".join([f"{proj.get('name', '')}" for proj in resume.get("projects", [])]),
                     }
                     summary_data.append(summary_row)
             
