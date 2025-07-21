@@ -47,6 +47,7 @@ class ResumeExtractor:
         # Google Cloud Vision API configuration
         self.google_credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
         self.google_project_id = os.getenv('GOOGLE_CLOUD_PROJECT_ID')
+        self.google_credentials_json = os.getenv('GOOGLE_APPLICATION_CREDENTIALS_JSON')
 
         # API configurations
         self.openai_api_key = os.getenv('OPENAI_API_KEY')
@@ -54,17 +55,28 @@ class ResumeExtractor:
             raise ValueError("OPENAI_API_KEY is not set")
 
         self.vision_client = None
-        if self.google_credentials_path and os.path.exists(self.google_credentials_path):
-            try:
+        try:
+            if self.google_credentials_path and os.path.exists(self.google_credentials_path):
+                # Use the credentials file if it exists
                 credentials = service_account.Credentials.from_service_account_file(
                     self.google_credentials_path
                 )
-                self.vision_client = vision.ImageAnnotatorClient(credentials=credentials)
-                logger.info("Google Cloud Vision API initialized successfully")
-            except Exception as e:
-                logger.warning(f"Failed to initialize Google Cloud Vision API: {e}")
-        else:
-            logger.warning("Google Cloud Vision API credentials not found or invalid")
+            elif self.google_credentials_json:
+                # Write the JSON string to a temp file and use it
+                with tempfile.NamedTemporaryFile(mode="w+", delete=False) as temp_file:
+                    temp_file.write(self.google_credentials_json)
+                    temp_file.flush()
+                    credentials = service_account.Credentials.from_service_account_file(
+                        temp_file.name
+                    )
+            else:
+                raise ValueError("No valid Google Cloud credentials provided.")
+
+            self.vision_client = vision.ImageAnnotatorClient(credentials=credentials)
+            logger.info("Google Cloud Vision API initialized successfully")
+
+        except Exception as e:
+            logger.warning(f"Failed to initialize Google Cloud Vision API: {e}")
         
         # Available API providers and models
         self.api_providers = {
