@@ -55,28 +55,37 @@ class ResumeExtractor:
             raise ValueError("OPENAI_API_KEY is not set")
 
         self.vision_client = None
+        self.temp_file_path = None 
         try:
             if self.google_credentials_path and os.path.exists(self.google_credentials_path):
                 # Use the credentials file if it exists
                 credentials = service_account.Credentials.from_service_account_file(
                     self.google_credentials_path
                 )
+                logger.info("Using Google Cloud credentials from file")
+                
             elif self.google_credentials_json:
-                # Write the JSON string to a temp file and use it
-                with tempfile.NamedTemporaryFile(mode="w+", delete=False) as temp_file:
-                    temp_file.write(self.google_credentials_json)
-                    temp_file.flush()
-                    credentials = service_account.Credentials.from_service_account_file(
-                        temp_file.name
-                    )
+                # Parse and validate JSON first
+                try:
+                    credentials_dict = json.loads(self.google_credentials_json)
+                except json.JSONDecodeError as e:
+                    raise ValueError(f"Invalid JSON in GOOGLE_APPLICATION_CREDENTIALS_JSON: {e}")
+                
+                # Create credentials directly from dict (more efficient)
+                credentials = service_account.Credentials.from_service_account_info(
+                    credentials_dict
+                )
+                logger.info("Using Google Cloud credentials from environment variable")
+                
             else:
-                raise ValueError("No valid Google Cloud credentials provided.")
+                raise ValueError("No valid Google Cloud credentials provided. Set either GOOGLE_APPLICATION_CREDENTIALS or GOOGLE_APPLICATION_CREDENTIALS_JSON")
 
             self.vision_client = vision.ImageAnnotatorClient(credentials=credentials)
             logger.info("Google Cloud Vision API initialized successfully")
 
         except Exception as e:
-            logger.warning(f"Failed to initialize Google Cloud Vision API: {e}")
+            logger.error(f"Failed to initialize Google Cloud Vision API: {e}")
+            raise
         
         # Available API providers and models
         self.api_providers = {
@@ -200,6 +209,14 @@ class ResumeExtractor:
         print(f"Initialized with provider: {self.current_provider}")
         print(f"Current vision model: {self.get_current_vision_model()}")
         print(f"Current text model: {self.get_current_text_model()}")
+
+    def __del__(self):
+        # Clean up temp file if it was created
+        if hasattr(self, 'temp_file_path') and self.temp_file_path and os.path.exists(self.temp_file_path):
+            try:
+                os.unlink(self.temp_file_path)
+            except Exception as e:
+                logger.warning(f"Failed to clean up temp file: {e}")
 
     def load_prompts(self):
         prompts = {}
