@@ -47,7 +47,6 @@ class ResumeExtractor:
         # Google Cloud Vision API configuration
         self.google_credentials_path = os.getenv('GOOGLE_APPLICATION_CREDENTIALS')
         self.google_project_id = os.getenv('GOOGLE_CLOUD_PROJECT_ID')
-        self.google_credentials_json = os.getenv('GOOGLE_APPLICATION_CREDENTIALS_JSON')
 
         # API configurations
         self.openai_api_key = os.getenv('OPENAI_API_KEY')
@@ -55,37 +54,17 @@ class ResumeExtractor:
             raise ValueError("OPENAI_API_KEY is not set")
 
         self.vision_client = None
-        self.temp_file_path = None 
-        try:
-            if self.google_credentials_path and os.path.exists(self.google_credentials_path):
-                # Use the credentials file if it exists
+        if self.google_credentials_path and os.path.exists(self.google_credentials_path):
+            try:
                 credentials = service_account.Credentials.from_service_account_file(
                     self.google_credentials_path
                 )
-                logger.info("Using Google Cloud credentials from file")
-                
-            elif self.google_credentials_json:
-                # Parse and validate JSON first
-                try:
-                    credentials_dict = json.loads(self.google_credentials_json)
-                except json.JSONDecodeError as e:
-                    raise ValueError(f"Invalid JSON in GOOGLE_APPLICATION_CREDENTIALS_JSON: {e}")
-                
-                # Create credentials directly from dict (more efficient)
-                credentials = service_account.Credentials.from_service_account_info(
-                    credentials_dict
-                )
-                logger.info("Using Google Cloud credentials from environment variable")
-                
-            else:
-                raise ValueError("No valid Google Cloud credentials provided. Set either GOOGLE_APPLICATION_CREDENTIALS or GOOGLE_APPLICATION_CREDENTIALS_JSON")
-
-            self.vision_client = vision.ImageAnnotatorClient(credentials=credentials)
-            logger.info("Google Cloud Vision API initialized successfully")
-
-        except Exception as e:
-            logger.error(f"Failed to initialize Google Cloud Vision API: {e}")
-            raise
+                self.vision_client = vision.ImageAnnotatorClient(credentials=credentials)
+                logger.info("Google Cloud Vision API initialized successfully")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Google Cloud Vision API: {e}")
+        else:
+            logger.warning("Google Cloud Vision API credentials not found or invalid")
         
         # Available API providers and models
         self.api_providers = {
@@ -100,23 +79,6 @@ class ResumeExtractor:
             }
         }
 
-        self.ocr_methods = ['google_vision']
-        
-        # Current provider and model indices
-        self.current_provider = 'openai'
-        self.current_vision_model_index = 0
-        self.current_text_model_index = 0
-        
-        # Usage tracking
-        self.usage_file = 'resume_api_usage_tracking.json'
-        self.usage_data = self._load_usage_data()
-        
-        # Rate limiting - aligned with main.py settings
-        self.daily_limits = {
-            'openai': 9500  # RPM limit
-        }
-
-        # Define extraction prompt with better JSON structure
         self.extraction_prompt = """
         You are an expert resume parser. Extract the following information from the resume provided.
         Return the data in JSON format with the exact structure shown below:
@@ -202,6 +164,22 @@ class ResumeExtractor:
     - Keep the experience array empty.
     - Use contextual cues (e.g., "developed", "collaborated", "built") to recognize project entries.
     """
+
+        self.ocr_methods = ['google_vision']
+        
+        # Current provider and model indices
+        self.current_provider = 'openai'
+        self.current_vision_model_index = 0
+        self.current_text_model_index = 0
+        
+        # Usage tracking
+        self.usage_file = 'resume_api_usage_tracking.json'
+        self.usage_data = self._load_usage_data()
+        
+        # Rate limiting - aligned with main.py settings
+        self.daily_limits = {
+            'openai': 9500  # RPM limit
+        }
         
         # Initialize OpenAI client
         self.openai_client = OpenAI(api_key=self.openai_api_key) if self.openai_api_key else None
@@ -209,14 +187,6 @@ class ResumeExtractor:
         print(f"Initialized with provider: {self.current_provider}")
         print(f"Current vision model: {self.get_current_vision_model()}")
         print(f"Current text model: {self.get_current_text_model()}")
-
-    def __del__(self):
-        # Clean up temp file if it was created
-        if hasattr(self, 'temp_file_path') and self.temp_file_path and os.path.exists(self.temp_file_path):
-            try:
-                os.unlink(self.temp_file_path)
-            except Exception as e:
-                logger.warning(f"Failed to clean up temp file: {e}")
 
     def load_prompts(self):
         prompts = {}
@@ -472,74 +442,7 @@ class ResumeExtractor:
             "error": f"Failed to extract resume data after {max_retries} attempts.",
             "success": False
         }
-    
-    def _make_openai_vision_api_call(self, images: List[str], model: str) -> Optional[str]:
-        """Make API call to OpenAI Vision API with image data"""
-        if not self.openai_client:
-            logger.error("OpenAI client not initialized - check API key")
-            return None
-            
-        try:
-            # Prepare messages for vision API
-            messages = [
-                {
-                    "role": "system",
-                    "content": """You are a precise resume parser. Your job is to extract information EXACTLY as written in the resume without any modifications, cleaning, or truncation. 
 
-                    CRITICAL RULES:
-                    - Extract complete information - never truncate names, emails, or any other fields
-                    - If a section is not present, return empty string or empty array
-                    - Extract only from relevant sections - don't mix information from different sections
-                    - Return only valid JSON without any markdown formatting
-                    - Do not infer or generate information not explicitly stated
-                    - ENSURE the JSON is complete and properly closed with all brackets and braces
-                    - Pay careful attention to the image quality and extract text accurately"""
-                }
-            ]
-            
-            # Add user message with images
-            user_message = {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": self.load_prompts()
-                    }
-                ]
-            }
-            
-            # Add each image to the message
-            for image_base64 in images:
-                user_message["content"].append({
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/png;base64,{image_base64}",
-                        "detail": "high"  # Use high detail for better text extraction
-                    }
-                })
-            
-            messages.append(user_message)
-            
-            """# Determine max_tokens based on model
-            if model == 'gpt-4o-mini':
-                max_output_tokens = 4000
-            else:  # gpt-4o
-                max_output_tokens = 8000"""
-            
-            completion = self.openai_client.chat.completions.create(
-                model=model,
-                messages=messages,
-                max_tokens=6000,
-                temperature=0,  # Keep deterministic
-            )
-
-            # Update usage tracking
-            self._update_api_usage('openai', model, 1)
-            return completion.choices[0].message.content
-            
-        except Exception as e:
-            logger.error(f"Error making OpenAI Vision API call: {str(e)}")
-            return None
 
     def _make_openai_text_api_call(self, text_content: str, model: str) -> Optional[str]:
         """Make API call to OpenAI with text content (for text-based PDFs)"""
@@ -551,7 +454,7 @@ class ResumeExtractor:
         try:
             #safe_text = self.clean_unicode(text_content)
             all_prompts = "\n\n".join(prompts.values())
-            full_prompt = all_prompts + "\n\nResume text:\n" + text_content
+            full_prompt = self.extraction_prompt + "\n\nResume text:\n" + text_content
             
             # Determine max_tokens based on model
             if model == 'gpt-4.1-mini':
@@ -899,76 +802,6 @@ class ResumeExtractor:
         daily_limit = self.daily_limits.get(self.current_provider, 1000)
         return today_usage >= daily_limit
 
-    def _check_pdf_type(self, file_path: str) -> str:
-        """Check if PDF is text-based or image-based"""
-        try:
-            # Quick check with PyPDF2
-            with open(file_path, 'rb') as file:
-                pdf_reader = PyPDF2.PdfReader(file)
-                if len(pdf_reader.pages) == 0:
-                    return "empty"
-                
-                # Check first few pages
-                text_chars = 0
-                pages_to_check = min(3, len(pdf_reader.pages))
-                
-                for i in range(pages_to_check):
-                    try:
-                        page_text = pdf_reader.pages[i].extract_text()
-                        text_chars += len(page_text.strip())
-                    except:
-                        continue
-                
-                # If we got substantial text, it's likely text-based
-                if text_chars > 200:  # Increased threshold
-                    return "text-based"
-                else:
-                    return "image-based"
-                    
-        except Exception as e:
-            logger.warning(f"Could not determine PDF type: {e}")
-            return "unknown"
-
-    def _extract_text_from_pdf_simple(self, file_path: str) -> str:
-        """Simple text extraction for text-based PDFs"""
-        text = ""
-        
-        # Try PyPDF2 first
-        try:
-            with open(file_path, 'rb') as file:
-                pdf_reader = PyPDF2.PdfReader(file)
-                for page_num, page in enumerate(pdf_reader.pages):
-                    try:
-                        page_text = page.extract_text()
-                        if page_text and page_text.strip():
-                            text += page_text + "\n"
-                    except Exception as e:
-                        logger.warning(f"PyPDF2 failed on page {page_num}: {e}")
-                        continue
-                        
-        except Exception as e:
-            logger.warning(f"PyPDF2 extraction failed: {e}")
-        
-        # Try PyMuPDF if PyPDF2 didn't work well
-        if not self._validate_extracted_text(text):
-            try:
-                doc = fitz.open(file_path)
-                text = ""
-                for page_num in range(len(doc)):
-                    try:
-                        page = doc.load_page(page_num)
-                        page_text = page.get_text()
-                        if page_text and page_text.strip():
-                            text += page_text + "\n"
-                    except Exception as e:
-                        logger.warning(f"PyMuPDF failed on page {page_num}: {e}")
-                        continue
-                doc.close()
-            except Exception as e:
-                logger.warning(f"PyMuPDF extraction failed: {e}")
-        
-        return text.strip()
-
     def _validate_extracted_text(self, text: str) -> bool:
         """Validate if extracted text is of good quality for resume parsing"""
         if not text or len(text.strip()) < 100:
@@ -1304,47 +1137,73 @@ class ResumeExtractor:
         # Step 1: Remove markdown code block markers
         response_text = re.sub(r'```json\s*', '', response_text, flags=re.IGNORECASE)
         response_text = re.sub(r'```\s*$', '', response_text, flags=re.MULTILINE)
-        
-        # Step 2: Strip leading/trailing whitespace
         response_text = response_text.strip()
 
-        # Step 3: Handle multiple JSON objects - combine them into one
-        # Find all individual JSON objects
-        json_objects = []
-        brace_count = 0
-        current_obj = ""
-        
-        for char in response_text:
-            if char == '{':
-                if brace_count == 0:
-                    current_obj = char
-                else:
-                    current_obj += char
-                brace_count += 1
-            elif char == '}':
-                current_obj += char
-                brace_count -= 1
-                if brace_count == 0:
-                    json_objects.append(current_obj)
-                    current_obj = ""
-            elif brace_count > 0:
-                current_obj += char
-        
-        # Step 4: Parse each JSON object and merge them
+        # Step 2: Try to parse as single JSON object first
+        try:
+            # Clean the text before parsing
+            cleaned_text = self._sanitize_json_text(response_text)
+            return json.loads(cleaned_text)
+        except json.JSONDecodeError:
+            pass
+
+        # Step 3: Handle multiple JSON objects
         merged_data = {}
-        for json_obj in json_objects:
-            try:
-                # Sanitize bad characters
-                sanitized = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', json_obj)
-                sanitized = sanitized.replace('"', '"').replace('"', '"').replace("'", "'").replace("�", "?")
-                
-                parsed = json.loads(sanitized)
-                merged_data.update(parsed)
-            except json.JSONDecodeError as e:
-                print(f"[JSON Parse Error in object] {e}: {json_obj[:100]}...")
+        
+        # More robust approach: split by lines and reconstruct JSON objects
+        lines = response_text.split('\n')
+        current_json = []
+        brace_count = 0
+        
+        for line in lines:
+            stripped_line = line.strip()
+            if not stripped_line:
                 continue
+                
+            # Count braces in this line
+            brace_count += stripped_line.count('{') - stripped_line.count('}')
+            current_json.append(line)
+            
+            # When brace count returns to 0, we have a complete JSON object
+            if brace_count == 0 and current_json:
+                json_text = '\n'.join(current_json)
+                
+                try:
+                    cleaned_json = self._sanitize_json_text(json_text)
+                    parsed = json.loads(cleaned_json)
+                    merged_data.update(parsed)
+                    print(f"[DEBUG] Successfully parsed JSON object with keys: {list(parsed.keys())}")
+                except json.JSONDecodeError as e:
+                    print(f"[JSON Parse Error] {e}")
+                    print(f"[DEBUG] Problematic JSON text: {json_text[:200]}...")
+                current_json = []
         
         return merged_data
+
+    def _sanitize_json_text(self,text: str) -> str:
+        """Sanitize text to make it valid JSON"""
+        # Remove control characters
+        sanitized = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', text)
+        
+        # Fix common quote issues
+        sanitized = sanitized.replace('"', '"').replace('"', '"')
+        sanitized = sanitized.replace("'", "'").replace("�", "?")
+        
+        # Remove any trailing commas before closing braces/brackets
+        sanitized = re.sub(r',(\s*[}\]])', r'\1', sanitized)
+        
+        # Ensure proper string escaping for newlines and quotes
+        # This regex finds content within double quotes and escapes newlines
+        def escape_newlines_in_strings(match):
+            content = match.group(1)
+            # Escape newlines and backslashes within the string
+            content = content.replace('\\', '\\\\').replace('\n', '\\n').replace('\r', '\\r')
+            return f'"{content}"'
+        
+        sanitized = re.sub(r'"([^"]*)"', escape_newlines_in_strings, sanitized)
+        
+        return sanitized
+
 
     def _post_process_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Enhanced post-processing with OCR-specific corrections"""

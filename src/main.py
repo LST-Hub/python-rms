@@ -942,9 +942,10 @@ def create_excel_response(data):
             if "extracted_data" in data:
                 for resume in data["extracted_data"]:
                     summary_row = {
-                        "Name": resume.get("name", ""),
-                        "Email": resume.get("email", ""),
-                        "Phone": resume.get("phone", ""),
+                        "Name": resume.get("personal_info", {}).get("name", ""),
+                        "Email": resume.get("personal_info", {}).get("email", ""),
+                        "Phone": resume.get("personal_info", {}).get("phone", ""),
+                        "Location": resume.get("personal_info", {}).get("location", ""),
                         "Skills": ", ".join(resume.get("skills", [])) if isinstance(resume.get("skills"), list) else str(resume.get("skills", "")),
                         "Experience": "; ".join([
                             f"{exp.get('title', '')} at {exp.get('company', '')} ({exp.get('location', '')}) - {exp.get('duration', '')}"
@@ -956,10 +957,20 @@ def create_excel_response(data):
                         ]),
                         "Designation": resume.get("experience", [{}])[0].get("title", "") if isinstance(resume.get("experience"), list) and resume.get("experience") else "",
                         "Summary": resume.get("summary", ""),
-                        "Total Experience": resume.get("total_experience", ""),
-                        "Awards": ", ".join(resume.get("awards", [])) if isinstance(resume.get("awards"), list) else str(resume.get("awards", "")),
-                        "Certifications": "; ".join([f"{cer.get('name', '')}" for cer in resume.get("certifications", [])]),
-                        "Projects": "; ".join([f"{proj.get('name', '')}" for proj in resume.get("projects", [])]),
+                        "Total Exeprience": resume.get("total_experience", ""),
+                        "Certifications": "; ".join([
+                            f"{edu.get('name', '')}"
+                            for edu in resume.get("certifications", [])
+                        ]),
+                        "Languages": "; ".join([
+                            f"{exp.get('language', '')}"
+                            for exp in resume.get("languages", [])
+                        ]),
+                        "Awards": resume.get("awards", ""),
+                        "Projects": ";".join([
+                            f"{proj.get('name', '')}: {proj.get('description', '')}"
+                            for proj in resume.get("projects", [])
+                        ])
                     }
                     summary_data.append(summary_row)
             
