@@ -493,7 +493,7 @@ async def process_single_candidate_fit(evaluator, resume, job_description, fit_o
     job_desc_length = len(job_description)
     estimated_tokens = min(max((resume_text_length + job_desc_length) // 3, 1200), 3000)
     
-    await rate_limiter.acquire(estimated_tokens)
+    await rate_limiter.acquire("gpt-4o",estimated_tokens)
     
     try:
         # Run the actual evaluation in a thread to avoid blocking
@@ -506,59 +506,112 @@ async def process_single_candidate_fit(evaluator, resume, job_description, fit_o
             fit_options
         )
         if result:
-            result['candidate_name'] = resume.get('personal_info', {}).get('name', 'Unknown')
-        return result
+            if 'candidate_name' not in result:
+                result['candidate_name'] = resume.get('personal_info', {}).get('name', 'Unknown')
+
+            # Ensure all required fields are present
+            if 'fit_percentage' not in result:
+                result['fit_percentage'] = 0
+            if 'summary' not in result:
+                result['summary'] = "Analysis failed to produce summary."
+            if 'key_matches' not in result:
+                result['key_matches'] = []
+            if 'key_gaps' not in result:
+                result['key_gaps'] = []
+                
+            return result
+        
+        else:
+            candidate_name = resume.get('personal_info', {}).get('name', 'Unknown')
+            print(f"Failed to evaluate candidate: {candidate_name}")
+            return {
+                "candidate_name": candidate_name,
+                "fit_percentage": 0,
+                "summary": "Could not evaluate candidate fit.",
+                "key_matches": [],
+                "key_gaps": [],
+                "error": "Evaluation failed to return results",
+                "success": False
+            }
+        
     except Exception as e:
         candidate_name = resume.get('personal_info', {}).get('name', 'Unknown')
-        return {"candidate_name": candidate_name, "error": str(e), "success": False}
+        print(f"Error evaluating {candidate_name}: {str(e)}")
+        return {
+            "candidate_name": candidate_name,
+            "fit_percentage": 0,
+            "summary": "Error during evaluation.",
+            "key_matches": [],
+            "key_gaps": [],
+            "error": str(e),
+            "success": False
+        }
 
 # Updated process_candidate_fit_job_async with model-aware concurrency
 async def process_candidate_fit_job_async(job_id, resumes, job_description, evaluator, fit_options=None):
     """Process candidate fit job with model-aware concurrency control"""
-    results = []
-    total_resumes = len(resumes)
-    
-    # Update job status to processing
-    job_storage.update_job(job_id, 'processing', progress=0)
-    
-    # Use lower concurrency for gpt-4o due to 40k TPM limit
-    semaphore = asyncio.Semaphore(8)  # Conservative for gpt-4o
-    
-    async def process_with_semaphore(resume, index):
-        async with semaphore:
-            result = await process_single_candidate_fit(evaluator, resume, job_description, fit_options)
-            
-            # Update progress
-            if (index + 1) % 2 == 0 or index == total_resumes - 1:
-                progress = int((index + 1) * 100 / total_resumes)
-                job_storage.update_job(job_id, 'processing', progress=progress)
-            
-            return result
-    
-    # Create tasks for all resumes
-    tasks = [
-        process_with_semaphore(resume, i) 
-        for i, resume in enumerate(resumes)
-    ]
-    
-    # Process in smaller batches for candidate fit (due to gpt-4o TPM limits)
-    batch_size = 10  # Smaller batches for gpt-4o
-    for i in range(0, len(tasks), batch_size):
-        batch_tasks = tasks[i:i + batch_size]
-        batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+    try:
+        results = []
+        total_resumes = len(resumes)
         
-        for result in batch_results:
-            if isinstance(result, Exception):
-                results.append({"error": str(result), "success": False})
-            elif result:
-                results.append(result)
+        # Update job status to processing
+        job_storage.update_job(job_id, 'processing', progress=0)
         
-        # Add delay between batches for gpt-4o
-        if i + batch_size < len(tasks):
-            await asyncio.sleep(0.5)
-    
-    # Mark job as completed
-    job_storage.update_job(job_id, 'completed', results, progress=100)
+        # Use lower concurrency for gpt-4o due to 40k TPM limit
+        semaphore = asyncio.Semaphore(8)  # Conservative for gpt-4o
+        
+        async def process_with_semaphore(resume, index):
+            async with semaphore:
+                # Make sure resume is a dictionary, not a list
+                if isinstance(resume, list):
+                    #logger.warning(f"Resume at index {index} is a list, expected dictionary")
+                    resume = resume[0] if resume else {}
+                
+                # Debugging output
+                print(f"Processing resume {index+1}/{total_resumes} of type {type(resume)}")
+                
+                result = await process_single_candidate_fit(evaluator, resume, job_description, fit_options)
+                
+                # Update progress
+                if (index + 1) % 2 == 0 or index == total_resumes - 1:
+                    progress = int((index + 1) * 100 / total_resumes)
+                    job_storage.update_job(job_id, 'processing', progress=progress)
+                
+                return result
+        
+        # Create tasks for all resumes
+        tasks = [
+            process_with_semaphore(resume, i) 
+            for i, resume in enumerate(resumes)
+        ]
+        
+        # Process in smaller batches for candidate fit (due to gpt-4o TPM limits)
+        batch_size = 10  # Smaller batches for gpt-4o
+        for i in range(0, len(tasks), batch_size):
+            batch_tasks = tasks[i:i + batch_size]
+            batch_results = await asyncio.gather(*batch_tasks, return_exceptions=True)
+            
+            for result in batch_results:
+                if isinstance(result, Exception):
+                    print(f"Batch exception: {result}")
+                    results.append({"error": str(result), "success": False})
+                elif result:
+                    print(f"Successfully processed result: {result.get('candidate_name', 'Unknown')}")
+                    results.append(result)
+                else:
+                    print(f"Empty result from process_single_candidate_fit")
+            
+            # Add delay between batches for gpt-4o
+            if i + batch_size < len(tasks):
+                await asyncio.sleep(0.5)
+        
+        # Mark job as completed
+        print(f"Completed job {job_id} with {(results)} results")
+        job_storage.update_job(job_id, 'completed', results, progress=100)
+        
+    except Exception as e:
+        print(f"Error in candidate fit job {job_id}: {str(e)}")
+        job_storage.update_job(job_id, 'failed', {'error': str(e)})
 
 
 @app.get("/")
@@ -724,6 +777,8 @@ async def candidate_fit(request: CandidateFitRequest):
             candidate_fit_evaluator,
             fit_options
         )
+
+        #print(type(request.resume_data), type(request.job_description_data))
 
         # Updated time estimation for GPT-4.1 (slower due to TPM limits)
         estimated_time_minutes = max(2, len(request.resume_data) // 10)  # More conservative
