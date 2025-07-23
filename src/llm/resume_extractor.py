@@ -112,11 +112,11 @@ class ResumeExtractor:
                 "phone": "Full phone number including country code if available",
                 "location": "City, State/Country",
                 "linkedin": "LinkedIn profile URL",
-                "portfolio": "Portfolio/website URL"
+                #"portfolio": "Portfolio/website URL",
             },
             "summary": "Professional summary or objective statement",
             "skills": [
-                "List of technical and soft skills"
+                "List of technical and soft skills",
             ],
             "experience": [
                 {
@@ -133,7 +133,7 @@ class ResumeExtractor:
                 "institution": "Institution name",
                 "location": "Institution location",
                 "year": "Graduation year or duration",
-                "gpa": "GPA if mentioned"
+                "gpa": "GPA if mentioned",
                 }
             ],
             "certifications": [
@@ -141,7 +141,7 @@ class ResumeExtractor:
                 "name": "Certification name",
                 "issuer": "Issuing organization",
                 "date": "Date obtained",
-                "expiry": "Expiry date if any"
+                "expiry": "Expiry date if any",
                 }
             ],
             "projects": [
@@ -149,17 +149,17 @@ class ResumeExtractor:
                 "name": "Project name",
                 "description": "Project description",
                 "technologies": ["Technologies used"],
-                "duration": "Project duration"
+                "duration": "Project duration",
                 }
             ],
             "languages": [
                 {
                 "language": "Language name",
-                "proficiency": "Proficiency level"
+                "proficiency": "Proficiency level",
                 }
             ],
             "awards": [
-                "List of awards and achievements"
+                "List of awards and achievements",
             ]
             }
 
@@ -1200,7 +1200,7 @@ class ResumeExtractor:
                 
                 try:
                     cleaned_json = self._sanitize_json_text(json_text)
-                    parsed = json.loads(cleaned_json)
+                    parsed = json.loads(json_text)
                     merged_data.update(parsed)
                     print(f"[DEBUG] Successfully parsed JSON object with keys: {list(parsed.keys())}")
                 except json.JSONDecodeError as e:
