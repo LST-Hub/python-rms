@@ -8,10 +8,10 @@ ENV PYTHONUNBUFFERED=1
 # Set work directory
 WORKDIR /app
 
-# Install system dependencies including Redis and Supervisor
+# Install system dependencies (removed Redis)
 RUN apt-get update && \
     apt-get install -y build-essential libpoppler-cpp-dev pkg-config python3-dev \
-    poppler-utils libreoffice redis-server supervisor && \
+    poppler-utils libreoffice supervisor && \
     rm -rf /var/lib/apt/lists/*
 
 # Create supervisor log directory

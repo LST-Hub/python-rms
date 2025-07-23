@@ -34,15 +34,15 @@ aiofiles==23.2.1
 werkzeug
 gunicorn
 
-redis
+#redis
 
 fastapi
-sqlalchemy
-aiomysql
-passlib[bcrypt]
-python-jose[cryptography]
+#sqlalchemy
+#aiomysql
+#passlib[bcrypt]
+#python-jose[cryptography]
 
-mysql-connector-python
+#mysql-connector-python
 
 openai
 
