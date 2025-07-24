@@ -11,7 +11,7 @@ docx2txt
 PyMuPDF
 pillow
 pytesseract
-opencv-python
+#opencv-python
 
 # AI/ML
 google-generativeai==0.3.2
