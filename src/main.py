@@ -1,10 +1,10 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, status, Depends
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy import Column, Integer, String, select
+#from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+#from sqlalchemy.orm import sessionmaker, declarative_base
+#from sqlalchemy import Column, Integer, String, select
 from jose import JWTError, jwt
-from passlib.context import CryptContext
+#from passlib.context import CryptContext
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -25,7 +25,7 @@ import asyncio
 from collections import deque, defaultdict
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
-import redis
+#import redis
 from dotenv import load_dotenv
 
 from src.llm.resume_extractor import ResumeExtractor
