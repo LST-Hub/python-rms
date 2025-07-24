@@ -400,7 +400,7 @@ class ResumeExtractor:
                     model = self.get_current_vision_model()
                     return self._extract_with_vision_api(file_path, filename, model, max_retries)"""
                 
-                logger.info(f"extarcted data {ocr_text}")
+                #logger.info(f"extarcted data {ocr_text}")
                 # If we got good text, proceed with processing
                 if ocr_text and self._validate_extracted_text(ocr_text):
                     logger.info(f"Successfully extracted text using {method} for {filename}")
@@ -520,7 +520,7 @@ class ResumeExtractor:
 
             # Update usage tracking
             self._update_api_usage('openai', model, 1)
-            logger.info(completion.choices[0].message.content)
+            #logger.info(completion.choices[0].message.content)
             return completion.choices[0].message.content
             
         except Exception as e:

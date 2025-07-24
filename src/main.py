@@ -490,13 +490,13 @@ async def process_extraction_job_async(job_id, files, resume_extractor, job_stor
         
         # Model-aware semaphore limits
         model_semaphores = {
-            'gpt-4o': asyncio.Semaphore(8),        # Conservative for 40k TPM
-            'gpt-4o-mini': asyncio.Semaphore(15),  # Higher for 200k TPM
-            'gpt-3.5-turbo': asyncio.Semaphore(15) # Medium
+            'gpt-4o': asyncio.Semaphore(3),        # Reduced from 8 to 3
+            'gpt-4o-mini': asyncio.Semaphore(5),   # Reduced from 15 to 5
+            'gpt-3.5-turbo': asyncio.Semaphore(5)  # Reduced from 15 to 5
         }
         
         # Overall semaphore to prevent overwhelming (reduced for memory)
-        overall_semaphore = asyncio.Semaphore(20)
+        overall_semaphore = asyncio.Semaphore(5) # Reduced from 20 to 5
         
         async def process_with_semaphore(file_info, index):
             async with overall_semaphore:
