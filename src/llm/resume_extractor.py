@@ -358,11 +358,18 @@ class ResumeExtractor:
                     img_data = pix.tobytes("png")
                     
                     images.append(img_data)
+
+                    # Explicitly delete pixmap to free memory sooner
+                    del pix
                     logger.info(f"Converted page {page_num + 1} to image for OCR")
                     
                 except Exception as e:
                     logger.warning(f"Failed to convert page {page_num} to image: {e}")
                     continue
+
+                # Force garbage collection after each page
+                import gc
+                gc.collect()
             
             doc.close()
             
