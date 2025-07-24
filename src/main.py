@@ -3,7 +3,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 #from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 #from sqlalchemy.orm import sessionmaker, declarative_base
 #from sqlalchemy import Column, Integer, String, select
-from jose import JWTError, jwt
+#from jose import JWTError, jwt
 #from passlib.context import CryptContext
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,7 +19,7 @@ from io import BytesIO, StringIO
 import tempfile
 import os, asyncio
 import uuid
-import threading
+#import threading
 import time
 import asyncio
 from collections import deque, defaultdict
