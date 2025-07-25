@@ -267,7 +267,7 @@ class ProcessingQueue:
         
         self.queue = asyncio.Queue()
         self.active_jobs = 0
-        self.max_concurrent = 20  # Reduced for memory optimization
+        self.max_concurrent = 5  # Reduced for memory optimization
         self.processing_task = None
         self.running = False
         self.job_storage = job_storage  # Reference to job storage
@@ -386,7 +386,7 @@ candidate_fit_evaluator = CandidateFitEvaluator()
 # Updated global instances
 rate_limiter = RateLimiter()  # Now handles multiple models
 job_storage = JobStorage()
-executor = ThreadPoolExecutor(max_workers=20)  # Increased for better model distribution
+executor = ThreadPoolExecutor(max_workers=5)  # Increased for better model distribution
 processing_queue = ProcessingQueue(job_storage)  # Now model-aware
 
 # Pydantic models
