@@ -315,18 +315,7 @@ class ProcessingQueue:
     
     async def _process_extraction_job(self, job_id, files, resume_extractor):
         try:
-            # Start heartbeat task to keep job status updated
-            heartbeat_task = asyncio.create_task(self.job_heartbeat(job_id, job_storage))
-            
-            try:
-                await process_extraction_job_async(job_id, files, resume_extractor, self.job_storage)
-            finally:
-                # Cancel heartbeat when done
-                heartbeat_task.cancel()
-                try:
-                    await heartbeat_task
-                except asyncio.CancelledError:
-                    pass
+            await process_extraction_job_async(job_id, files, resume_extractor, self.job_storage)
         except Exception as e:
             await self.job_storage.update_job(job_id, 'failed', {'error': str(e)})
         finally:
@@ -339,45 +328,6 @@ class ProcessingQueue:
             await self.job_storage.update_job(job_id, 'failed', {'error': str(e)})
         finally:
             self.active_jobs -= 1
-
-    async def job_heartbeat(self, job_id, job_storage):
-        """Send heartbeat updates for a job to prevent it appearing stuck"""
-        last_progress = 0
-        no_change_count = 0
-        
-        while True:
-            try:
-                # Get current job status
-                job = await job_storage.get_job(job_id)
-                if not job:
-                    break
-                    
-                # If job is no longer processing, stop heartbeat
-                if job['status'] not in ['processing', 'pending']:
-                    break
-                
-                current_progress = job.get('progress', 0)
-                
-                # If progress hasn't changed in 3 checks
-                if current_progress == last_progress:
-                    no_change_count += 1
-                    if no_change_count >= 3:
-                        # Increment progress slightly to show activity
-                        new_progress = min(current_progress + 1, 99)
-                        await job_storage.update_job(job_id, 'processing', progress=new_progress)
-                        print(f"Job {job_id} heartbeat: {new_progress}%")
-                        no_change_count = 0
-                else:
-                    no_change_count = 0
-                    
-                last_progress = current_progress
-                    
-                # Sleep for 5 seconds before next check
-                await asyncio.sleep(5)
-                    
-            except Exception as e:
-                print(f"Error in job heartbeat: {e}")
-                await asyncio.sleep(5)
 
 # Initialize extractors
 resume_extractor = ResumeExtractor()
@@ -402,7 +352,7 @@ class CandidateFitRequest(BaseModel):
     job_description_data: str
     fit_options: Optional[Dict[str, Any]] = None
 
-# Updated process_single_resume with model-aware rate limiting and token estimation
+# Updated process_single_resume with model-aware token estimation
 async def process_single_resume(resume_extractor, file_path, filename):
     """Process a single resume with model-aware rate limiting and token estimation"""
     
@@ -534,9 +484,9 @@ async def process_extraction_job_async(job_id, files, resume_extractor, job_stor
         
         if total_files > 1:
             print(f"Starting extraction job {job_id} with {total_files} files")
-            
+        
         # Update job status to processing
-        await job_storage.update_job(job_id, 'processing', progress=1)
+        await job_storage.update_job(job_id, 'processing', progress=0)
         
         # Model-aware semaphore limits
         model_semaphores = {
@@ -553,19 +503,21 @@ async def process_extraction_job_async(job_id, files, resume_extractor, job_stor
                 file_path, filename = file_info
                 model_name = determine_model_for_file(file_path, filename)
                 
-                # Update progress before processing each file
-                progress = max(10, int((index) * 90 / total_files))
-                await job_storage.update_job(job_id, 'processing', progress=progress)
-                
                 # Use model-specific semaphore
                 semaphore = model_semaphores.get(model_name, model_semaphores['gpt-4o-mini'])
                 
                 async with semaphore:
                     result = await process_single_resume(resume_extractor, file_path, filename)
                     
-                    # Update progress after each file completes
-                    progress = max(10, int((index + 1) * 90 / total_files))
-                    await job_storage.update_job(job_id, 'processing', progress=progress)
+                    # Update progress more frequently for better UX
+                    if total_files > 20:
+                        if (index + 1) % max(1, total_files // 20) == 0 or index == total_files - 1:
+                            progress = int((index + 1) * 100 / total_files)
+                            await job_storage.update_job(job_id, 'processing', progress=progress)
+                    else:
+                        if (index + 1) % 2 == 0 or index == total_files - 1:
+                            progress = int((index + 1) * 100 / total_files)
+                            await job_storage.update_job(job_id, 'processing', progress=progress)
                     
                     return result
         
@@ -600,17 +552,8 @@ async def process_extraction_job_async(job_id, files, resume_extractor, job_stor
         
     except Exception as e:
         print(f"Error in extraction job {job_id}: {str(e)}")
-        
-        # Check if job exists before updating
-        job = await job_storage.get_job(job_id)
-        if job:
-            # Only mark as failed if not already completed
-            if job['status'] != 'completed':
-                await job_storage.update_job(job_id, 'failed', {'error': str(e)})
-        else:
-            # Job doesn't exist, create it with failed status
-            await job_storage.create_job(job_id, 'extraction')
-            await job_storage.update_job(job_id, 'failed', {'error': str(e)})
+        await job_storage.update_job(job_id, 'failed', {'error': str(e)})
+
 
 # Updated process_single_candidate_fit with token estimation
 async def process_single_candidate_fit(evaluator, resume, job_description, fit_options=None):
@@ -761,18 +704,10 @@ async def extract_resume_data(files: List[UploadFile] = File(...)):
         job_id = str(uuid.uuid4())
         file_infos = []
         
-        # Create job in storage immediately with 0% progress
-        await job_storage.create_job(job_id, 'extraction')
-        
         if len(files) > 1:
             print(f"Processing {len(files)} files for job {job_id}")
         
-        # Update to 1% after job creation
-        await job_storage.update_job(job_id, 'processing', progress=1)
-        
-        # Track progress during file upload
-        total_files = len(files)
-        for i, file in enumerate(files):
+        for file in files:
             try:
                 # Check file size and type
                 if file.size > 10 * 1024 * 1024:  # 10MB limit
@@ -785,10 +720,8 @@ async def extract_resume_data(files: List[UploadFile] = File(...)):
                     tmp_file_path = tmp_file.name
                 file_infos.append((tmp_file_path, file.filename))
 
-                # Update progress every 10% during file preparation
-                if total_files > 10 and (i+1) % (total_files // 10) == 0:
-                    prep_progress = min(5 + int((i+1) * 5 / total_files), 10)
-                    await job_storage.update_job(job_id, 'processing', progress=prep_progress)
+                if len(files) <= 5:
+                    print(f"Saved temp file for {file.filename}: {tmp_file_path}")
                 
             except Exception as e:
                 print(f"Error processing file {file.filename}: {str(e)}")
