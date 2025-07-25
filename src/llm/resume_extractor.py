@@ -239,20 +239,32 @@ class ResumeExtractor:
         return provider_config['text_models'][self.current_text_model_index][0]
     
     def _extract_text_with_google_vision(self, file_path: str, max_pages: int = 10) -> str:
-        """Extract text from PDF using Google Cloud Vision API OCR"""
+        """Extract text from PDF using Google Cloud Vision API OCR with minimal memory usage"""
         if not self.vision_client:
             raise Exception("Google Cloud Vision API not initialized")
         
+        temp_files = []
+        temp_dir = None
+        
         try:
-            images = self._pdf_to_images_for_ocr(file_path, max_pages)
-            if not images:
+            # Get image file paths instead of image data
+            temp_files = self._pdf_to_images_for_ocr(file_path, max_pages)
+            if not temp_files:
                 raise Exception("Could not convert PDF to images for OCR")
+            
+            # Get parent directory of first temp file
+            if temp_files:
+                temp_dir = os.path.dirname(temp_files[0])
             
             extracted_text = ""
             
-            for i, image_data in enumerate(images):
+            for i, img_path in enumerate(temp_files):
                 try:
-                    image = vision.Image(content=image_data)
+                    # Read the image file
+                    with open(img_path, 'rb') as image_file:
+                        content = image_file.read()
+                    
+                    image = vision.Image(content=content)
                     
                     # Use document text detection for better layout analysis
                     response = self.vision_client.document_text_detection(image=image)
@@ -264,7 +276,17 @@ class ResumeExtractor:
                     page_text = self._process_document_response(response)
                     extracted_text += f"\n--- Page {i+1} ---\n{page_text}\n"
                     
+                    # Delete the file after processing to save space
+                    try:
+                        os.remove(img_path)
+                    except:
+                        pass
+                    
                     logger.info(f"Extracted text from page {i+1} with layout analysis")
+                    
+                    # Force garbage collection
+                    import gc
+                    gc.collect()
                     
                 except Exception as e:
                     logger.warning(f"Failed to extract text from page {i+1}: {e}")
@@ -275,6 +297,22 @@ class ResumeExtractor:
         except Exception as e:
             logger.error(f"Enhanced OCR failed: {e}")
             raise
+            
+        finally:
+            # Clean up temp files
+            for temp_file in temp_files:
+                try:
+                    if os.path.exists(temp_file):
+                        os.remove(temp_file)
+                except:
+                    pass
+            
+            # Remove temp directory if it exists
+            if temp_dir and os.path.exists(temp_dir):
+                try:
+                    os.rmdir(temp_dir)
+                except:
+                    pass
 
     def _process_document_response(self, response) -> str:
         """Process Google Vision document response with layout preservation"""
@@ -338,11 +376,15 @@ class ResumeExtractor:
             'bottom': bottom
         }
     
-    def _pdf_to_images_for_ocr(self, file_path: str, max_pages: int = 10) -> List[bytes]:
-        """Convert PDF pages to image bytes for OCR processing"""
-        images = []
+    def _pdf_to_images_for_ocr(self, file_path: str, max_pages: int = 10) -> List[str]:
+        """Convert PDF pages to image files for OCR processing with minimal memory usage"""
+        temp_image_files = []
         
         try:
+            # Create a temporary directory for this specific PDF
+            import tempfile
+            temp_dir = tempfile.mkdtemp(prefix="pdf_ocr_")
+            
             doc = fitz.open(file_path)
             
             # Limit number of pages to avoid processing too many pages
@@ -352,32 +394,45 @@ class ResumeExtractor:
                 try:
                     page = doc.load_page(page_num)
                     
-                    # Convert page to high-resolution image for better OCR
-                    mat = fitz.Matrix(2.0, 2.0)  # 2x zoom for better quality
-                    pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
-                    img_data = pix.tobytes("png")
+                    # Reduce resolution for memory savings - still adequate for OCR
+                    # Use lower resolution to save memory
+                    mat = fitz.Matrix(1.5, 1.5)  # Reduced from 2.0
                     
-                    images.append(img_data)
-
+                    # Use RGB24 instead of RGBA for smaller memory footprint
+                    pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+                    
+                    # Save to temporary file instead of keeping in memory
+                    temp_file_path = os.path.join(temp_dir, f"page_{page_num}.png")
+                    pix.save(temp_file_path)
+                    temp_image_files.append(temp_file_path)
+                    
                     # Explicitly delete pixmap to free memory sooner
                     del pix
-                    logger.info(f"Converted page {page_num + 1} to image for OCR")
+                    
+                    logger.info(f"Converted page {page_num + 1} to image and saved to temp file")
+                    
+                    # Force garbage collection after each page
+                    import gc
+                    gc.collect()
                     
                 except Exception as e:
                     logger.warning(f"Failed to convert page {page_num} to image: {e}")
                     continue
-
-                # Force garbage collection after each page
-                import gc
-                gc.collect()
             
+            # Close document as soon as possible
             doc.close()
             
         except Exception as e:
             logger.error(f"Error converting PDF to images for OCR: {e}")
+            # Clean up any temp files created before the error
+            for temp_file in temp_image_files:
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
             raise
         
-        return images
+        return temp_image_files
     
     def _extract_with_ocr_fallback(self, file_path: str, filename: str, max_retries: int = 3) -> Dict[str, Any]:
         """
